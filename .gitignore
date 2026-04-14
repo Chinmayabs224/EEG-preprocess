@@ -1,0 +1,27 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+myenv/
+venv/
+env/
+
+# Data and large files
+chb*/
+*.edf
+*.npz
+*.csv
+Data_struct.txt
+*.svg
+
+# Output directories
+output/
+logs/
+results/
+saved_models/
+
+# VSCode/IDE
+.vscode/
+.idea/

@@ -1,0 +1,11 @@
+pyedflib
+mne
+numpy
+scipy
+scikit-learn
+snntorch
+torch
+matplotlib
+seaborn
+tqdm
+pandas
