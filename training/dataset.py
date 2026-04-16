@@ -57,26 +57,24 @@ class EEGSpikeDataset(Dataset):
         self.seq_len = seq_len
         self.mode = mode
 
-        # Build sequences by sliding window over consecutive windows
-        self.sequences = []
-        self.seq_labels = []
-
-        n = len(features)
-        for i in range(n - seq_len + 1):
-            seq = self.features[i:i + seq_len]
-            # Label is the label of the LAST window in the sequence
-            lbl = self.labels[i + seq_len - 1]
-            self.sequences.append(seq)
-            self.seq_labels.append(lbl)
-
-        self.sequences = np.array(self.sequences)   # (M, seq_len, 64)
-        self.seq_labels = np.array(self.seq_labels)  # (M,)
+        # Instead of allocating a massive dense array of shape (M, seq_len, 64),
+        # we will slice `self.features` dynamically in `__getitem__`. This prevents OOM
+        # errors on 2-core CPU machines.
+        n = len(self.features)
+        self.num_sequences = max(0, n - seq_len + 1)
+        
+        # We need the labels array for the WeightedRandomSampler
+        if self.num_sequences > 0:
+            self.seq_labels = self.labels[self.seq_len - 1 : n]
+        else:
+            self.seq_labels = np.array([], dtype=np.int64)
 
     def __len__(self):
-        return len(self.sequences)
+        return self.num_sequences
 
     def __getitem__(self, idx):
-        x = torch.tensor(self.sequences[idx], dtype=torch.float32)
+        # Lazy sequence slicing
+        x = torch.tensor(self.features[idx : idx + self.seq_len], dtype=torch.float32)
         y = torch.tensor(self.seq_labels[idx], dtype=torch.long)
 
         if self.mode == "autoencoder":
