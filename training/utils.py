@@ -243,6 +243,80 @@ def plot_confusion_matrix(
 
 
 # ═════════════════════════════════════════════════════════════════
+# ROC Curve Plot
+# ═════════════════════════════════════════════════════════════════
+
+def plot_roc_curve(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    save_path: str,
+    model_name: str = "Model",
+):
+    """Plot ROC curve with AUC annotation."""
+    from sklearn.metrics import roc_curve
+
+    fpr, tpr, _ = roc_curve(y_true, y_prob)
+    auc = roc_auc_score(y_true, y_prob) if len(np.unique(y_true)) > 1 else 0.0
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.plot(fpr, tpr, lw=2, color="#4C72B0", label=f"AUC = {auc:.4f}")
+    ax.plot([0, 1], [0, 1], "k--", lw=1, label="Random")
+    ax.fill_between(fpr, tpr, alpha=0.15, color="#4C72B0")
+    ax.set_xlabel("False Positive Rate (1 - Specificity)", fontsize=12)
+    ax.set_ylabel("True Positive Rate (Sensitivity / Recall)", fontsize=12)
+    ax.set_title(f"{model_name} — ROC Curve", fontsize=14, fontweight="bold")
+    ax.legend(fontsize=12)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    logger.info(f"Saved ROC curve: {save_path}")
+
+
+def plot_model_comparison(
+    all_results: Dict[str, Dict[str, float]],
+    save_path: str,
+):
+    """
+    Bar chart comparing F1, Recall, and AUC-ROC across all models.
+    """
+    models = [k for k in all_results if k not in ("ensemble_weights",)]
+    metrics_to_plot = ["f1", "recall", "auc_roc"]
+    labels = ["F1 Score", "Recall (Sensitivity)", "AUC-ROC"]
+    colors = ["#4C72B0", "#DD8452", "#55A868"]
+
+    x = np.arange(len(models))
+    width = 0.25
+
+    fig, ax = plt.subplots(figsize=(14, 6))
+
+    for i, (metric, label, color) in enumerate(zip(metrics_to_plot, labels, colors)):
+        values = [all_results[m].get(metric, 0) for m in models]
+        bars = ax.bar(x + i * width, values, width, label=label, color=color, alpha=0.85)
+        # Add value labels on top of bars
+        for bar, val in zip(bars, values):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.01,
+                f"{val:.3f}",
+                ha="center", va="bottom", fontsize=9, fontweight="bold"
+            )
+
+    ax.set_xlabel("Model", fontsize=12)
+    ax.set_ylabel("Score", fontsize=12)
+    ax.set_title("Model Comparison — Seizure Detection Performance", fontsize=14, fontweight="bold")
+    ax.set_xticks(x + width)
+    ax.set_xticklabels([m.upper() for m in models], fontsize=11)
+    ax.set_ylim(0, 1.12)
+    ax.legend(fontsize=11)
+    ax.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    logger.info(f"Saved model comparison chart: {save_path}")
+
+
+# ═════════════════════════════════════════════════════════════════
 # Model Saving / Loading Utils
 # ═════════════════════════════════════════════════════════════════
 
