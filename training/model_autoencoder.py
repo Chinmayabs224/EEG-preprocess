@@ -202,7 +202,8 @@ def train_autoencoder(
             f"Epoch {epoch:03d}/{epochs} │ "
             f"train_loss={train_loss:.6f} │ "
             f"val_loss={val_loss:.6f} │ "
-            f"lr={current_lr:.2e}"
+            f"lr={current_lr:.2e}",
+            flush=True
         )
 
         if early_stop(val_loss, model):

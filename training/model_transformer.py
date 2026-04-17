@@ -262,7 +262,8 @@ def train_transformer(
             f"Epoch {epoch:03d}/{epochs} │ "
             f"loss={train_loss:.4f}/{val_loss:.4f} │ "
             f"F1={train_metrics['f1']:.3f}/{val_metrics['f1']:.3f} │ "
-            f"AUC={val_metrics.get('auc_roc', 0):.3f}"
+            f"AUC={val_metrics.get('auc_roc', 0):.3f}",
+            flush=True
         )
 
         if early_stop(val_metrics["f1"], model):
