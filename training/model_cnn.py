@@ -1,11 +1,19 @@
 """
-Model 3: 1D CNN for Seizure Classification.
+Model 3: CNN for Seizure Classification.
 
-Treats each spike-rate feature window as a 1D signal and applies
-convolutional layers to detect local spike patterns. Works on
-individual windows (no sequence dependency).
+Two modes:
+    - **spatial** (default): Reshapes 64-dim spike-rate vector into an
+      8×8 2D grid approximating electrode layout, then applies 2D convolutions
+      to capture spatial propagation patterns typical of seizure onset.
+    - **flat** (legacy): Treats the feature vector as a 1D signal with
+      1D convolutions.
 
-Architecture::
+Spatial Architecture::
+
+    Input (64,) → reshape → (1, 8, 8) → Conv2D(32,k=3) → Conv2D(64,k=3)
+                → Conv2D(128,k=3) → AdaptivePool → FC(64) → FC(2)
+
+Flat Architecture (legacy)::
 
     Input (64,) → reshape → Conv1D(64,32,k=3) → Conv1D(32,64,k=3)
                 → Conv1D(64,128,k=3) → AdaptivePool → FC(64) → FC(2)
@@ -22,9 +30,110 @@ from typing import Dict
 logger = logging.getLogger(__name__)
 
 
+class EEGSpatialCNN(nn.Module):
+    """
+    2D Spatial CNN for EEG spike feature classification.
+
+    Reshapes 64-dim spike-rate vector into an 8×8 2D grid
+    (approximating electrode layout) and applies 2D convolutions
+    to capture spatial propagation patterns.
+
+    Parameters
+    ----------
+    input_dim : int
+        Feature dimension (default 64). Must be a perfect square for 2D reshape,
+        or will be zero-padded to nearest perfect square.
+    num_classes : int
+        Output classes (default 2).
+    dropout : float
+        Dropout rate (default 0.4).
+    """
+
+    def __init__(
+        self,
+        input_dim: int = 64,
+        num_classes: int = 2,
+        dropout: float = 0.4,
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+
+        # Determine grid size
+        import math
+        self.grid_size = int(math.ceil(math.sqrt(input_dim)))
+        self.padded_dim = self.grid_size ** 2
+
+        # 2D Conv blocks
+        self.conv_blocks = nn.Sequential(
+            # Block 1
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.GELU(),
+            nn.Dropout2d(dropout * 0.3),
+
+            # Block 2
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.GELU(),
+            nn.Dropout2d(dropout * 0.3),
+
+            # Block 3
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.GELU(),
+            nn.Dropout2d(dropout * 0.5),
+
+            # Block 4
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.GELU(),
+            nn.AdaptiveAvgPool2d(2),
+        )
+
+        # Classifier
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(256 * 4, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(dropout),
+
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
+            nn.GELU(),
+            nn.Dropout(dropout * 0.5),
+
+            nn.Linear(64, num_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        x : (B, input_dim) — single window of spike features
+
+        Returns
+        -------
+        logits : (B, num_classes)
+        """
+        B = x.size(0)
+
+        # Pad if needed
+        if self.input_dim < self.padded_dim:
+            padding = torch.zeros(B, self.padded_dim - self.input_dim, device=x.device)
+            x = torch.cat([x, padding], dim=1)
+
+        # Reshape to 2D grid: (B, input_dim) → (B, 1, H, W)
+        x = x.view(B, 1, self.grid_size, self.grid_size)
+
+        features = self.conv_blocks(x)
+        logits = self.classifier(features)
+        return logits
+
+
 class EEGCNNClassifier(nn.Module):
     """
-    1D Convolutional Neural Network for EEG spike feature classification.
+    1D Convolutional Neural Network for EEG spike feature classification (legacy).
 
     Treats the 64-dimensional spike-rate vector as a 1D signal
     with 1 channel and applies 1D convolutions.
@@ -48,7 +157,7 @@ class EEGCNNClassifier(nn.Module):
         super().__init__()
         self.input_dim = input_dim
 
-        # Conv blocks: treat 64-dim feature as a 1D signal of length 64
+        # Conv blocks: treat feature as a 1D signal of length input_dim
         self.conv_blocks = nn.Sequential(
             # Block 1
             nn.Conv1d(1, 32, kernel_size=5, padding=2),
@@ -111,7 +220,7 @@ class EEGCNNClassifier(nn.Module):
 
 
 def train_cnn(
-    model: EEGCNNClassifier,
+    model,
     train_loader,
     val_loader,
     device: torch.device,
@@ -146,8 +255,9 @@ def train_cnn(
         "val_auc": [],
     }
 
+    model_type = "Spatial 2D CNN" if isinstance(model, EEGSpatialCNN) else "1D CNN"
     print(f"\n{'█' * 50}")
-    print(f"█  CNN CLASSIFIER TRAINING")
+    print(f"█  {model_type} CLASSIFIER TRAINING")
     print(f"█  Device: {device}")
     print(f"{'█' * 50}\n")
 
@@ -234,7 +344,7 @@ def train_cnn(
 
 
 def evaluate_cnn(
-    model: EEGCNNClassifier,
+    model,
     test_loader,
     device: torch.device,
 ) -> Dict[str, float]:

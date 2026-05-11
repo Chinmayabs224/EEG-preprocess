@@ -10,7 +10,8 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
-    roc_auc_score, confusion_matrix, classification_report,
+    roc_auc_score, average_precision_score, confusion_matrix,
+    classification_report, precision_recall_curve,
 )
 from typing import Dict, Optional
 import logging
@@ -59,23 +60,29 @@ def compute_metrics(
             metrics["auc_roc"] = roc_auc_score(y_true, y_prob)
         except ValueError:
             metrics["auc_roc"] = 0.0
+        try:
+            metrics["auc_pr"] = average_precision_score(y_true, y_prob)
+        except ValueError:
+            metrics["auc_pr"] = 0.0
 
     return metrics
 
 
 def print_metrics(metrics: Dict[str, float], prefix: str = ""):
     """Pretty-print metrics."""
-    print(f"\n{'═' * 50}")
+    print(f"\n{'═' * 55}")
     print(f"  {prefix} Evaluation Results")
-    print(f"{'═' * 50}")
+    print(f"{'═' * 55}")
     print(f"  Accuracy    : {metrics.get('accuracy', 0):.4f}")
-    print(f"  Precision   : {metrics.get('precision', 0):.4f}")
+    print(f"  Precision   : {metrics.get('precision', 0):.4f}  ← (False Alarm Control)")
     print(f"  Recall      : {metrics.get('recall', 0):.4f}  ← (Seizure Sensitivity)")
     print(f"  F1 Score    : {metrics.get('f1', 0):.4f}  ← (Primary Metric)")
     print(f"  Specificity : {metrics.get('specificity', 0):.4f}")
     if "auc_roc" in metrics:
         print(f"  AUC-ROC     : {metrics.get('auc_roc', 0):.4f}")
-    print(f"{'═' * 50}\n")
+    if "auc_pr" in metrics:
+        print(f"  AUC-PR      : {metrics.get('auc_pr', 0):.4f}  ← (Imbalance-Aware)")
+    print(f"{'═' * 55}\n")
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -271,6 +278,37 @@ def plot_roc_curve(
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close()
     logger.info(f"Saved ROC curve: {save_path}")
+
+
+def plot_precision_recall_curve(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    save_path: str,
+    model_name: str = "Model",
+):
+    """Plot Precision-Recall curve with AUC-PR annotation."""
+    prec, rec, _ = precision_recall_curve(y_true, y_prob)
+    ap = average_precision_score(y_true, y_prob) if len(np.unique(y_true)) > 1 else 0.0
+
+    # Baseline = prevalence
+    prevalence = y_true.mean()
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.plot(rec, prec, lw=2, color="#DD8452", label=f"AP = {ap:.4f}")
+    ax.axhline(prevalence, color="k", lw=1, ls="--", alpha=0.5,
+              label=f"Random (prevalence={prevalence:.4f})")
+    ax.fill_between(rec, prec, alpha=0.15, color="#DD8452")
+    ax.set_xlabel("Recall (Sensitivity)", fontsize=12)
+    ax.set_ylabel("Precision", fontsize=12)
+    ax.set_title(f"{model_name} — Precision-Recall Curve", fontsize=14, fontweight="bold")
+    ax.legend(fontsize=12)
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, 1.02)
+    ax.set_ylim(0, 1.02)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    logger.info(f"Saved PR curve: {save_path}")
 
 
 def plot_model_comparison(

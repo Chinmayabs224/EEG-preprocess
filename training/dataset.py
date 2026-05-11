@@ -3,6 +3,11 @@ Dataset loader for downstream model training.
 
 Loads .npz files produced by spike_pipeline, handles class imbalance,
 and provides PyTorch DataLoaders for training/validation/test splits.
+
+Enhancements:
+    - Feature augmentation (spectral/statistical biomarkers)
+    - Seizure-class data augmentation (noise, scaling, time-shift)
+    - Weighted random sampling for class imbalance
 """
 
 import os
@@ -15,6 +20,49 @@ from typing import Tuple, Dict, Optional
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+# ═════════════════════════════════════════════════════════════════
+# Seizure Augmentation Transforms
+# ═════════════════════════════════════════════════════════════════
+
+class SeizureAugmentor:
+    """
+    On-the-fly data augmentation applied ONLY to the seizure (minority) class.
+
+    Augmentations:
+        1. Gaussian noise injection: N(0, σ) with σ ∈ [0.01, 0.05]
+        2. Feature scaling perturbation: multiply by U(0.9, 1.1)
+        3. Feature dropout: randomly zero out 5–10% of features
+
+    These are applied probabilistically (p=0.5 each) to create
+    diverse training samples from the few seizure examples.
+    """
+
+    def __init__(self, noise_std: float = 0.03, scale_range: Tuple[float, float] = (0.9, 1.1)):
+        self.noise_std = noise_std
+        self.scale_lo, self.scale_hi = scale_range
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        """Apply random augmentations to a single feature vector or sequence."""
+        x = x.copy()
+
+        # Gaussian noise (p=0.5)
+        if np.random.random() < 0.5:
+            noise = np.random.normal(0, self.noise_std, x.shape).astype(np.float32)
+            x = x + noise
+
+        # Feature scaling (p=0.5)
+        if np.random.random() < 0.5:
+            scale = np.random.uniform(self.scale_lo, self.scale_hi, x.shape[-1:]).astype(np.float32)
+            x = x * scale
+
+        # Feature dropout (p=0.3)
+        if np.random.random() < 0.3:
+            mask = np.random.random(x.shape[-1:]) > 0.1  # drop 10%
+            x = x * mask.astype(np.float32)
+
+        return x
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -39,11 +87,12 @@ class EEGSpikeDataset(Dataset):
         labels: np.ndarray,
         seq_len: int = 30,
         mode: str = "classification",
+        augment_seizure: bool = False,
     ):
         """
         Parameters
         ----------
-        features : np.ndarray, shape ``(N, 64)``
+        features : np.ndarray, shape ``(N, feature_dim)``
         labels : np.ndarray, shape ``(N,)``
         seq_len : int
             Number of consecutive windows to group into one sequence
@@ -51,18 +100,22 @@ class EEGSpikeDataset(Dataset):
         mode : str
             ``"classification"`` — return (sequence, label) pairs.
             ``"autoencoder"`` — return (sequence, sequence) for reconstruction.
+        augment_seizure : bool
+            If True, apply random augmentations to seizure sequences.
         """
         self.features = features.astype(np.float32)
         self.labels = labels.astype(np.int64)
         self.seq_len = seq_len
         self.mode = mode
+        self.augment_seizure = augment_seizure
+        self.augmentor = SeizureAugmentor() if augment_seizure else None
 
         # Instead of allocating a massive dense array of shape (M, seq_len, 64),
         # we will slice `self.features` dynamically in `__getitem__`. This prevents OOM
         # errors on 2-core CPU machines.
         n = len(self.features)
         self.num_sequences = max(0, n - seq_len + 1)
-        
+
         # We need the labels array for the WeightedRandomSampler
         if self.num_sequences > 0:
             self.seq_labels = self.labels[self.seq_len - 1 : n]
@@ -74,8 +127,15 @@ class EEGSpikeDataset(Dataset):
 
     def __getitem__(self, idx):
         # Lazy sequence slicing
-        x = torch.tensor(self.features[idx : idx + self.seq_len], dtype=torch.float32)
-        y = torch.tensor(self.seq_labels[idx], dtype=torch.long)
+        x = self.features[idx : idx + self.seq_len].copy()
+        y = self.seq_labels[idx]
+
+        # Apply seizure augmentation only to minority class during training
+        if self.augment_seizure and self.augmentor is not None and y == 1:
+            x = self.augmentor(x)
+
+        x = torch.tensor(x, dtype=torch.float32)
+        y = torch.tensor(y, dtype=torch.long)
 
         if self.mode == "autoencoder":
             return x, x  # reconstruct input
@@ -84,19 +144,33 @@ class EEGSpikeDataset(Dataset):
 
 class EEGSingleWindowDataset(Dataset):
     """
-    Flat dataset: each item is a single window (1, 64) with its label.
+    Flat dataset: each item is a single window (1, feature_dim) with its label.
     Used for CNN which treats each window independently.
     """
 
-    def __init__(self, features: np.ndarray, labels: np.ndarray):
-        self.features = torch.tensor(features, dtype=torch.float32)
-        self.labels = torch.tensor(labels, dtype=torch.long)
+    def __init__(
+        self,
+        features: np.ndarray,
+        labels: np.ndarray,
+        augment_seizure: bool = False,
+    ):
+        self.features = features.astype(np.float32)
+        self.labels = labels.astype(np.int64)
+        self.augment_seizure = augment_seizure
+        self.augmentor = SeizureAugmentor() if augment_seizure else None
 
     def __len__(self):
         return len(self.features)
 
     def __getitem__(self, idx):
-        return self.features[idx], self.labels[idx]
+        x = self.features[idx].copy()
+        y = self.labels[idx]
+
+        # Apply seizure augmentation only to minority class during training
+        if self.augment_seizure and self.augmentor is not None and y == 1:
+            x = self.augmentor(x)
+
+        return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.long)
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -238,6 +312,7 @@ def get_dataloaders(
     batch_size: int = 64,
     mode: str = "classification",
     use_weighted_sampler: bool = True,
+    augment_seizure: bool = False,
 ) -> Dict[str, DataLoader]:
     """
     Create PyTorch DataLoaders with optional WeightedRandomSampler
@@ -246,10 +321,16 @@ def get_dataloaders(
     loaders = {}
 
     for split_name, (feats, labs) in splits.items():
+        # Only augment training data
+        should_augment = augment_seizure and split_name == "train"
+
         if mode == "cnn":
-            dataset = EEGSingleWindowDataset(feats, labs)
+            dataset = EEGSingleWindowDataset(feats, labs, augment_seizure=should_augment)
         else:
-            dataset = EEGSpikeDataset(feats, labs, seq_len=seq_len, mode=mode)
+            dataset = EEGSpikeDataset(
+                feats, labs, seq_len=seq_len, mode=mode,
+                augment_seizure=should_augment,
+            )
 
         sampler = None
         shuffle = (split_name == "train")

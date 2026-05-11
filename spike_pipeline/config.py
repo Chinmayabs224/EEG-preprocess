@@ -87,6 +87,27 @@ class PipelineConfig:
     freq_min: float = 0.5
     freq_max: float = 25.0
 
+    # Enhanced SNN options (activate via --enhanced_snn flag in pipeline)
+    # These provide richer encoding at the cost of re-running feature extraction
+    enhanced_snn: bool = False
+    snn_spike_dim_v2: int = 128       # Double the output dimension
+    snn_time_steps_v2: int = 40       # Finer temporal resolution
+    snn_hidden_v2: List[int] = field(default_factory=lambda: [512, 256, 128])
+
+    def get_effective_snn_params(self):
+        """Return effective SNN parameters (enhanced or standard)."""
+        if self.enhanced_snn:
+            return {
+                "hidden": self.snn_hidden_v2,
+                "spike_dim": self.snn_spike_dim_v2,
+                "time_steps": self.snn_time_steps_v2,
+            }
+        return {
+            "hidden": self.snn_hidden,
+            "spike_dim": self.snn_spike_dim,
+            "time_steps": self.snn_time_steps,
+        }
+
     @property
     def feature_dim(self) -> int:
         """Filterbank feature dimension = n_filters × n_channels × window_size."""
