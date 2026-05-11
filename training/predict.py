@@ -93,7 +93,7 @@ def parse_args():
 # Model Loading
 # ═════════════════════════════════════════════════════════════════
 
-def load_trained_models(models_dir: str, model_names: list, device: torch.device) -> dict:
+def load_trained_models(models_dir: str, model_names: list, device: torch.device, seq_len: int = 30) -> dict:
     """Load saved model weights from models_dir."""
     from .model_autoencoder import EEGAutoencoder
     from .model_lstm import EEGLSTMClassifier
@@ -101,10 +101,10 @@ def load_trained_models(models_dir: str, model_names: list, device: torch.device
     from .model_transformer import EEGTransformerClassifier
 
     arch_map = {
-        "autoencoder": lambda: EEGAutoencoder(seq_len=30, feature_dim=64, latent_dim=32),
+        "autoencoder": lambda: EEGAutoencoder(seq_len=seq_len, feature_dim=64, latent_dim=32),
         "lstm":        lambda: EEGLSTMClassifier(input_dim=64, hidden_dim=128, num_layers=2),
         "cnn":         lambda: EEGCNNClassifier(input_dim=64),
-        "transformer": lambda: EEGTransformerClassifier(input_dim=64, d_model=128, nhead=4, num_layers=4),
+        "transformer": lambda: EEGTransformerClassifier(input_dim=64, d_model=128, nhead=4, num_layers=4, max_seq_len=seq_len + 10),
     }
 
     loaded = {}
@@ -408,7 +408,7 @@ def main():
 
     # ── Load models ──────────────────────────────────────────────
     logger.info("Loading trained models...")
-    models = load_trained_models(args.models_dir, args.models, device)
+    models = load_trained_models(args.models_dir, args.models, device, seq_len=args.seq_len)
 
     if not models:
         print("\n✗ No trained models found. Run train_all.py first.")
