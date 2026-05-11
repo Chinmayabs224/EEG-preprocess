@@ -133,6 +133,12 @@ Example on EC2:
         "--seed", type=int, default=42,
         help="Random seed for reproducibility (default: 42)",
     )
+    
+    # Enhanced SNN
+    parser.add_argument(
+        "--enhanced_snn", action="store_true",
+        help="Use enhanced SNN parameters (128-dim, 40 timesteps)",
+    )
 
     return parser.parse_args()
 
@@ -158,6 +164,7 @@ def main():
         rate_max_hz=args.rate_max_hz,
         temporal_n_bins=args.temporal_n_bins,
         random_seed=args.seed,
+        enhanced_snn=args.enhanced_snn,
     )
 
     print()
