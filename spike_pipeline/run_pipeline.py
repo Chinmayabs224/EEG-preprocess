@@ -167,6 +167,20 @@ def main():
         enhanced_snn=args.enhanced_snn,
     )
 
+    # Load saved scaler if available (for reproducible re-runs)
+    import os
+    from pathlib import Path
+    scaler_path = Path(config.output_dir) / "scaler.pkl"
+    if scaler_path.exists():
+        try:
+            import joblib
+            scaler = joblib.load(scaler_path)
+            print(f"  Loaded existing scaler from {scaler_path}")
+        except ImportError:
+            print("  ⚠ joblib not available, cannot load saved scaler")
+    else:
+        print(f"  No existing scaler found at {scaler_path}, will fit new one.")
+
     print()
     print("█" * 60)
     print("█  LARGE-SCALE EEG SPIKE ENCODING PIPELINE")

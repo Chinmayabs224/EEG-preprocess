@@ -194,25 +194,33 @@ def build_dataloaders(
     full_ds = EEGSpikeDataset(spike_dir=spike_dir, pad_to=pad_to)
     n = len(full_ds)
 
-    # Stratified split (preserve seizure ratio in every split)
-    indices = np.arange(n)
-    labels  = np.array(full_ds.labels)
+    # Subject-wise split (prevents patient leakage across splits)
+    from collections import defaultdict
 
-    normal_idx  = indices[labels == 0]
-    seizure_idx = indices[labels == 1]
+    # Group file indices by subject (parent folder = chb01, chb02 etc.)
+    subject_map = defaultdict(list)
+    for i, p in enumerate(full_ds.paths):
+        subject = p.parent.name
+        subject_map[subject].append(i)
 
-    def _split(arr):
-        rng.shuffle(arr)
-        n1 = int(len(arr) * train_ratio)
-        n2 = int(len(arr) * val_ratio)
-        return arr[:n1], arr[n1:n1+n2], arr[n1+n2:]
+    subjects = list(subject_map.keys())
+    rng.shuffle(subjects)
 
-    tr_n, va_n, te_n = _split(normal_idx)
-    tr_s, va_s, te_s = _split(seizure_idx)
+    n_train = int(len(subjects) * train_ratio)
+    n_val   = int(len(subjects) * val_ratio)
 
-    train_idx = np.concatenate([tr_n, tr_s])
-    val_idx   = np.concatenate([va_n, va_s])
-    test_idx  = np.concatenate([te_n, te_s])
+    train_subjects = subjects[:n_train]
+    val_subjects   = subjects[n_train:n_train + n_val]
+    test_subjects  = subjects[n_train + n_val:]
+
+    train_idx = np.array([i for s in train_subjects for i in subject_map[s]])
+    val_idx   = np.array([i for s in val_subjects   for i in subject_map[s]])
+    test_idx  = np.array([i for s in test_subjects  for i in subject_map[s]])
+
+    logger.info(
+        f"Subject split → train: {train_subjects} | "
+        f"val: {val_subjects} | test: {test_subjects}"
+    )
 
     from torch.utils.data import Subset
 

@@ -34,6 +34,14 @@ from .snn_feature_extractor import (
 )
 from .visualization import generate_all_plots
 
+try:
+    import joblib
+    HAS_JOBLIB = True
+except ImportError:
+    HAS_JOBLIB = False
+
+from sklearn.preprocessing import StandardScaler
+
 
 # ═════════════════════════════════════════════════════════════════
 # Single-File Processor
@@ -42,6 +50,7 @@ from .visualization import generate_all_plots
 def process_single_file(
     file_info: FileInfo,
     config: PipelineConfig,
+    scaler=None,
     logger: Optional[logging.Logger] = None,
 ) -> Dict[str, Any]:
     """
@@ -136,7 +145,8 @@ def process_single_file(
     snn_result = None
     try:
         snn_result = extract_snn_features(
-            preprocessed, labels["binary"], config, logger=logger,
+            preprocessed, labels["binary"], config,
+            scaler=scaler, logger=logger,
         )
     except Exception as exc:
         if logger:
@@ -211,9 +221,9 @@ def process_single_file(
 
 def _worker(args):
     """Wrapper for process_single_file for use with ProcessPoolExecutor."""
-    file_info, config = args
+    file_info, config, scaler = args
     # Each worker creates its own minimal logger (file handler only)
-    return process_single_file(file_info, config, logger=None)
+    return process_single_file(file_info, config, scaler=scaler, logger=None)
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -266,6 +276,67 @@ def run_full_pipeline(config: PipelineConfig):
 
     results = []
 
+    # ── Fit scaler on TRAIN subjects only ──────────────────────────
+    logger.info(f"\n{'─' * 60}")
+    logger.info(f"  Pass 1: Collecting filterbank features to fit scaler (train subjects only) ...")
+    logger.info(f"{'─' * 60}")
+
+    scaler_path = os.path.join(config.output_dir, "scaler.pkl")
+    extractor = FilterbankExtractor(config)
+    all_feats = []
+
+    # Determine train subjects using same seed and ratio as dataset.py
+    all_subjects = sorted(set(fi.subject_id for fi in manifest))
+    rng_scaler = np.random.default_rng(config.random_seed)
+    rng_scaler.shuffle(all_subjects)
+    n_train_subjects = int(len(all_subjects) * 0.70)
+    train_subjects = set(all_subjects[:n_train_subjects])
+    logger.info(f"  Train subjects for scaler: {sorted(train_subjects)}")
+    logger.info(f"  Held-out subjects (val/test): {sorted(set(all_subjects) - train_subjects)}")
+
+    feat_iterator = manifest
+    if HAS_TQDM:
+        feat_iterator = tqdm(manifest, desc="Collecting features", unit="file")
+
+    for file_info in feat_iterator:
+        if file_info.subject_id not in train_subjects:
+            continue   # ← ONLY fit on train subjects
+        try:
+            all_chunks = []
+            for chunk, chunk_start, chunk_fs in load_edf_chunks(
+                file_info.path, config, logger
+            ):
+                cleaned = preprocess_chunk(chunk, chunk_fs, config)
+                all_chunks.append(cleaned)
+            if not all_chunks:
+                continue
+            preprocessed = np.concatenate(all_chunks, axis=1)
+            labels_dict = build_labels(
+                preprocessed.shape[1], file_info.seizure_intervals,
+                config.sampling_rate,
+            )
+            X_feat, y = extractor.extract_windows(
+                preprocessed, labels_dict["binary"]
+            )
+            all_feats.append(X_feat)
+        except Exception as exc:
+            logger.warning(f"  ⚠ Skipping {file_info.filename} in scaler pass: {exc}")
+
+    scaler = StandardScaler()
+    scaler.fit(np.concatenate(all_feats, axis=0))
+    del all_feats  # free memory
+
+    if HAS_JOBLIB:
+        joblib.dump(scaler, scaler_path)
+        logger.info(f"  Scaler fitted on train subjects only ({len(train_subjects)}/{len(all_subjects)}) → saved to {scaler_path}")
+    else:
+        logger.info(f"  Scaler fitted on train subjects only ({len(train_subjects)}/{len(all_subjects)}) (joblib not available, not saved)")
+
+    # ── Pass 2: Process all files with fitted scaler ──
+    logger.info(f"\n{'─' * 60}")
+    logger.info(f"  Pass 2: Processing {len(manifest)} EDF files with fitted scaler ...")
+    logger.info(f"{'─' * 60}")
+
     if config.n_workers <= 1:
         # Sequential processing (easier debugging)
         iterator = manifest
@@ -273,11 +344,11 @@ def run_full_pipeline(config: PipelineConfig):
             iterator = tqdm(manifest, desc="Processing files",
                            unit="file")
         for file_info in iterator:
-            result = process_single_file(file_info, config, logger)
+            result = process_single_file(file_info, config, scaler=scaler, logger=logger)
             results.append(result)
     else:
         # Parallel processing
-        work_items = [(fi, config) for fi in manifest]
+        work_items = [(fi, config, scaler) for fi in manifest]
 
         with ProcessPoolExecutor(max_workers=config.n_workers) as executor:
             futures = {

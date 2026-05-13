@@ -289,6 +289,7 @@ def extract_snn_features(
     labels: np.ndarray,
     config: PipelineConfig,
     snn_model: Optional[SNNEncoder] = None,
+    scaler=None,
     device: Optional[torch.device] = None,
     logger: Optional[logging.Logger] = None,
 ) -> dict:
@@ -333,9 +334,12 @@ def extract_snn_features(
     if snn_model is None:
         snn_model = SNNEncoder(config)
 
-    from sklearn.preprocessing import StandardScaler
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_feat)
+    if scaler is None:
+        raise ValueError(
+            "A pre-fitted StandardScaler must be passed. "
+            "Never fit the scaler inside per-recording extraction."
+        )
+    X_scaled = scaler.transform(X_feat)
 
     snn_features = snn_model.encode_numpy(
         X_scaled, device, batch_size=config.batch_size
