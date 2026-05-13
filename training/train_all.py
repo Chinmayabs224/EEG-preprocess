@@ -94,7 +94,7 @@ def main():
         feature_dim = 75
 
     # Split data
-    splits = split_data(features, labels, random_state=args.seed)
+    splits = split_data(features, labels, file_boundaries=boundaries, random_state=args.seed)
 
     # Apply feature augmentation after split (fit on train only)
     if augmentor is not None:

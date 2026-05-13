@@ -201,7 +201,8 @@ def load_all_npz(
     spikes_path = Path(spikes_dir)
     all_features = []
     all_labels = []
-    file_boundaries = [0]
+    file_boundaries = []       # list of (subject_id, start_idx, end_idx)
+    cursor = 0
     loaded = 0
 
     npz_files = sorted(spikes_path.rglob("*.npz"))
@@ -234,9 +235,13 @@ def load_all_npz(
             if len(feats) == 0:
                 continue
 
+            # Subject ID = parent folder name (e.g. "chb01")
+            subject_id = npz_file.parent.name
+
             all_features.append(feats)
             all_labels.append(labs)
-            file_boundaries.append(file_boundaries[-1] + len(feats))
+            file_boundaries.append((subject_id, cursor, cursor + len(feats)))
+            cursor += len(feats)
             loaded += 1
 
         except Exception as e:
@@ -251,8 +256,10 @@ def load_all_npz(
 
     n_seizure = int(labels.sum())
     n_normal = len(labels) - n_seizure
+    subjects_found = sorted(set(s for s, _, _ in file_boundaries))
     logger.info(
-        f"Loaded {loaded} files → {len(features)} windows "
+        f"Loaded {loaded} files from {len(subjects_found)} subjects → "
+        f"{len(features)} windows "
         f"(seizure={n_seizure}, normal={n_normal}, "
         f"ratio={n_seizure / max(len(labels), 1):.2%})"
     )
@@ -267,32 +274,84 @@ def load_all_npz(
 def split_data(
     features: np.ndarray,
     labels: np.ndarray,
-    test_size: float = 0.15,
-    val_size: float = 0.15,
+    file_boundaries: list = None,
+    train_ratio: float = 0.70,
+    val_ratio: float = 0.15,
     random_state: int = 42,
 ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
     """
-    Stratified train/val/test split.
+    Subject-wise train/val/test split using file_boundaries.
 
-    Returns dict with keys "train", "val", "test", each mapping to
+    All windows from the same patient (subject) stay in the same split,
+    preventing patient leakage across train/val/test.
+
+    Parameters
+    ----------
+    features : np.ndarray, shape ``(N, feature_dim)``
+    labels : np.ndarray, shape ``(N,)``
+    file_boundaries : list of (subject_id, start_idx, end_idx) tuples
+        Returned by ``load_all_npz()``.
+    train_ratio : float
+    val_ratio : float
+    random_state : int
+
+    Returns
+    -------
+    dict with keys ``"train"``, ``"val"``, ``"test"``, each mapping to
     ``(features, labels)`` tuples.
     """
-    # First split: train+val vs test
-    X_trainval, X_test, y_trainval, y_test = train_test_split(
-        features, labels, test_size=test_size,
-        random_state=random_state, stratify=labels,
-    )
+    from collections import defaultdict
 
-    # Second split: train vs val
-    relative_val = val_size / (1 - test_size)
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_trainval, y_trainval, test_size=relative_val,
-        random_state=random_state, stratify=y_trainval,
-    )
+    if file_boundaries is None:
+        raise ValueError(
+            "file_boundaries is required for subject-wise splitting. "
+            "Pass the boundaries returned by load_all_npz()."
+        )
+
+    rng = np.random.default_rng(random_state)
+
+    # Group window index ranges by subject
+    subject_map = defaultdict(list)
+    for subject_id, start, end in file_boundaries:
+        subject_map[subject_id].append((start, end))
+
+    subjects = sorted(subject_map.keys())  # sorted for reproducibility
+    rng.shuffle(subjects)
+
+    n_train = int(len(subjects) * train_ratio)
+    n_val   = int(len(subjects) * val_ratio)
+
+    train_subjects = subjects[:n_train]
+    val_subjects   = subjects[n_train:n_train + n_val]
+    test_subjects  = subjects[n_train + n_val:]
+
+    def _gather(subj_list):
+        idx = []
+        for s in subj_list:
+            for start, end in subject_map[s]:
+                idx.extend(range(start, end))
+        return np.array(idx, dtype=np.int64) if idx else np.array([], dtype=np.int64)
+
+    train_idx = _gather(train_subjects)
+    val_idx   = _gather(val_subjects)
+    test_idx  = _gather(test_subjects)
+
+    X_train, y_train = features[train_idx], labels[train_idx]
+    X_val,   y_val   = features[val_idx],   labels[val_idx]
+    X_test,  y_test  = features[test_idx],  labels[test_idx]
 
     logger.info(
-        f"Split: train={len(X_train)} val={len(X_val)} test={len(X_test)} "
-        f"(seizure: train={y_train.sum()}, val={y_val.sum()}, test={y_test.sum()})"
+        f"Subject-wise split ({len(subjects)} subjects): "
+        f"train={len(train_subjects)} subj ({len(X_train)} windows) | "
+        f"val={len(val_subjects)} subj ({len(X_val)} windows) | "
+        f"test={len(test_subjects)} subj ({len(X_test)} windows)"
+    )
+    logger.info(f"  Train subjects: {sorted(train_subjects)}")
+    logger.info(f"  Val subjects  : {sorted(val_subjects)}")
+    logger.info(f"  Test subjects : {sorted(test_subjects)}")
+    logger.info(
+        f"  Seizure windows: train={int(y_train.sum())}, "
+        f"val={int(y_val.sum())}, test={int(y_test.sum())}"
     )
 
     return {
