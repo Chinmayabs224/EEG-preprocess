@@ -322,6 +322,13 @@ def run_full_pipeline(config: PipelineConfig):
         except Exception as exc:
             logger.warning(f"  ⚠ Skipping {file_info.filename} in scaler pass: {exc}")
 
+    # Safety: filter out any feature arrays with mismatched dimensions
+    feat_dims = [f.shape[1] for f in all_feats]
+    most_common_dim = max(set(feat_dims), key=feat_dims.count)
+    logger.info(f"  Feature dims found: {set(feat_dims)}, using: {most_common_dim}")
+    all_feats = [f for f in all_feats if f.shape[1] == most_common_dim]
+    logger.info(f"  Kept {len(all_feats)} files after dimension filtering")
+
     scaler = StandardScaler()
     scaler.fit(np.concatenate(all_feats, axis=0))
     del all_feats  # free memory
