@@ -79,11 +79,16 @@ class FilterbankExtractor:
         np.ndarray, shape ``(n_filters × n_channels,)``
         """
         feats = []
-        # Fix channel count to config value so every file produces the
+        # Enforce exactly config.n_channels so every file produces the
         # same feature dimension regardless of actual EDF channel count.
-        n_ch = min(epoch.shape[0], self.config.n_channels)
-        for ch in range(n_ch):
-            sig = epoch[ch]
+        # Truncate extra channels; zero-pad if fewer than expected.
+        target_n_ch = self.config.n_channels
+        actual_n_ch = epoch.shape[0]
+        for ch in range(target_n_ch):
+            if ch < actual_n_ch:
+                sig = epoch[ch]
+            else:
+                sig = np.zeros(epoch.shape[1], dtype=epoch.dtype)
             for b, a in self.filters:
                 filt = filtfilt(b, a, sig)
                 energy = np.log1p(np.sum(filt ** 2))
